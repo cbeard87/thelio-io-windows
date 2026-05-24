@@ -6,13 +6,18 @@
     <Copyright>GPL-3.0</Copyright>
     <AssemblyTitle>System76 Thelio Io Wrapper</AssemblyTitle>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net48</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
     <ApplicationManifest>..\app.manifest</ApplicationManifest>
+    <!-- Publish as one self-contained .exe so end users need no .NET runtime. -->
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
   <ItemGroup>
-    <Reference Include="OpenHardwareMonitor">
-      <HintPath>..\OpenHardwareMonitor\OpenHardwareMonitorLib.dll</HintPath>
-    </Reference>
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.4" />
   </ItemGroup>
 </Project>

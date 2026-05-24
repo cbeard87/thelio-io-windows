@@ -1,6 +1,7 @@
 use log::{
     debug,
     error,
+    warn,
 };
 use std::{
     env::current_exe,
@@ -74,6 +75,30 @@ fn driver_loop(curve: &FanCurve, ios: &mut [Io], wrapper: &mut Child) -> io::Res
     }
 }
 
+/// Open a serial port and confirm a Thelio Io is on the other end via the firmware
+/// `IoREVISION` handshake. Returns the ready-to-use device, or `None` if the port
+/// can't be opened or doesn't speak the Io protocol (so probing unrelated ports is
+/// harmless).
+fn open_thelio_io(port_name: &str) -> Option<Io> {
+    let port = serialport::new(port_name, 115200)
+        .timeout(Duration::from_millis(1))
+        .open()
+        .ok()?;
+
+    let mut io = Io::new(port, 1000);
+    match io.revision() {
+        Ok(revision) => {
+            debug!("Thelio Io at {} (revision {})", port_name, revision);
+            if let Err(err) = io.reset() {
+                error!("Thelio Io at {} failed to reset: {}", port_name, err);
+                return None;
+            }
+            Some(io)
+        },
+        Err(_) => None,
+    }
+}
+
 fn driver() -> io::Result<()> {
     let smbios = smbioslib::table_load_from_device()?;
 
@@ -85,55 +110,70 @@ fn driver() -> io::Result<()> {
         |sys: smbioslib::SMBiosSystemInformation| sys.version()
     ).unwrap_or(String::new());
 
-    let curve = match (sys_vendor.as_str(), product_version.as_str()) {
-        ("System76", "thelio-mira-r1" | "thelio-mira-r2" | "thelio-mira-r3"
-                   | "thelio-mira-b1" | "thelio-mira-b2" | "thelio-mira-b3" | "thelio-mira-b4") => {
-            debug!("{} {} uses standard fan curve", sys_vendor, product_version);
-            FanCurve::standard()
-        },
-        ("System76", "thelio-major-r1") => {
-            debug!("{} {} uses threadripper2 fan curve", sys_vendor, product_version);
-            FanCurve::threadripper2()
-        },
-        ("System76", "thelio-major-r2" | "thelio-major-r2.1" | "thelio-major-b1" | "thelio-major-b2"
-                   | "thelio-major-b3" | "thelio-mega-r1" | "thelio-mega-r1.1" ) => {
-            debug!("{} {} uses hedt fan curve", sys_vendor, product_version);
-            FanCurve::hedt()
-        },
-        ("System76", "thelio-massive-b1") => {
-            debug!("{} {} uses xeon fan curve", sys_vendor, product_version);
-            FanCurve::xeon()
-        },
-        _ => return Err(io::Error::new(
+    // Match by model family (prefix) rather than an exact model string. System76's
+    // SMBIOS product version is inconsistent across revisions (e.g. "thelio-mira-r4"
+    // vs "thelio-mira-r4-n3"), so prefix matching keeps every current and future
+    // revision of a family working without a code change. Curve assignments mirror
+    // the Linux daemon (https://github.com/pop-os/system76-power/blob/master/src/fan.rs).
+    let curve = if sys_vendor != "System76" {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("unsupported sys_vendor '{}'", sys_vendor)
+        ));
+    } else if product_version == "thelio-major-r1" {
+        debug!("{} {} uses threadripper2 fan curve", sys_vendor, product_version);
+        FanCurve::threadripper2()
+    } else if product_version.starts_with("thelio-major")
+           || product_version.starts_with("thelio-mega")
+           || product_version.starts_with("thelio-astra") {
+        debug!("{} {} uses hedt fan curve", sys_vendor, product_version);
+        FanCurve::hedt()
+    } else if product_version.starts_with("thelio-massive") {
+        debug!("{} {} uses xeon fan curve", sys_vendor, product_version);
+        FanCurve::xeon()
+    } else if product_version.starts_with("thelio-mira") {
+        debug!("{} {} uses standard fan curve", sys_vendor, product_version);
+        FanCurve::standard()
+    } else if product_version.starts_with("thelio") {
+        // Unknown Thelio family: default to the standard curve so a new model still
+        // runs (and cools) until an explicit curve can be assigned for it.
+        warn!("{} {} is not explicitly supported; using standard fan curve", sys_vendor, product_version);
+        FanCurve::standard()
+    } else {
+        return Err(io::Error::new(
             io::ErrorKind::Other,
             format!(
                 "unsupported sys_vendor '{}' and product_version '{}'",
                 sys_vendor,
                 product_version
             )
-        )),
+        ));
     };
 
+    let ports = serialport::available_ports()?;
     let mut ios = Vec::new();
-    for port_info in serialport::available_ports()? {
-        match port_info.port_type {
-            serialport::SerialPortType::UsbPort(usb_info) => {
-                if usb_info.vid == 0x1209 && usb_info.pid == 0x1776 {
-                    debug!("Thelio Io at {}", port_info.port_name);
 
-                    let port = serialport::new(port_info.port_name, 115200)
-                        .timeout(Duration::from_millis(1))
-                        .open()?;
-
-                    let mut io = Io::new(port, 1000);
-                    io.reset().map_err(|err| io::Error::new(
-                        io::ErrorKind::Other,
-                        err
-                    ))?;
+    // Pass 1: ports that advertise the Thelio Io USB VID/PID (the normal case).
+    for port_info in &ports {
+        if let serialport::SerialPortType::UsbPort(usb_info) = &port_info.port_type {
+            if usb_info.vid == 0x1209 && usb_info.pid == 0x1776 {
+                if let Some(io) = open_thelio_io(&port_info.port_name) {
                     ios.push(io);
                 }
-            },
-            _ => (),
+            }
+        }
+    }
+
+    // Pass 2: fallback for Windows 11, where the generic usbser.sys driver makes
+    // the port enumerate as `Unknown` (no VID/PID), so Pass 1 misses it. Probe each
+    // unidentified port with the Io handshake and keep the ones that respond.
+    if ios.is_empty() {
+        for port_info in &ports {
+            if matches!(port_info.port_type, serialport::SerialPortType::Unknown) {
+                if let Some(io) = open_thelio_io(&port_info.port_name) {
+                    ios.push(io);
+                }
+            }
         }
     }
 

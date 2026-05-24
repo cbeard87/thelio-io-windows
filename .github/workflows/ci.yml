@@ -6,24 +6,38 @@ on:
   pull_request:
   release:
     types: [published]
+permissions:
+  contents: write
 jobs:
     build:
         runs-on: windows-latest
         steps:
-            - uses: actions/checkout@v2
+            - uses: actions/checkout@v4
               with:
                   lfs: true
-            - uses: actions-rs/toolchain@v1
-            - run: choco install dotnet netfx-4.8 python3 wixtoolset
+            - uses: dtolnay/rust-toolchain@1.88.0
+            - run: choco install dotnet-8.0-sdk python3 wixtoolset
             - run: cargo install cargo-wix
             - env:
                   SSL_COM_USERNAME: ${{ github.event_name == 'release' && secrets.SSL_COM_USERNAME || '' }}
                   SSL_COM_PASSWORD: ${{ github.event_name == 'release' && secrets.SSL_COM_PASSWORD || '' }}
                   SSL_COM_CREDENTIAL_ID: ${{ github.event_name == 'release' && secrets.SSL_COM_CREDENTIAL_ID || '' }}
                   SSL_COM_TOTP_SECRET: ${{ github.event_name == 'release' && secrets.SSL_COM_TOTP_SECRET || '' }}
-                  SIGN: ${{ github.event_name == 'release' && '--sign' || '' }}
-              run: python build.py $Env:SIGN
-            - uses: actions/upload-artifact@v2
+                  SIGN: ${{ github.event_name == 'release' && secrets.SSL_COM_USERNAME != '' && '--sign' || '' }}
+              run: |
+                  if ($Env:SIGN) { python build.py --sign } else { python build.py }
+            - uses: actions/upload-artifact@v4
               with:
                   name: thelio-io
-                  path: ${{ github.event_name == 'release' && 'target/sign/thelio-io-*.msi' || 'target/wix/thelio-io-*.msi' }}
+                  path: |
+                      target/wix/thelio-io-*.msi
+                      target/sign/thelio-io-*.msi
+                  if-no-files-found: warn
+            - name: Attach installer to release
+              if: github.event_name == 'release'
+              uses: softprops/action-gh-release@v2
+              with:
+                  files: |
+                      target/wix/thelio-io-*.msi
+                      target/sign/thelio-io-*.msi
+                  fail_on_unmatched_files: false

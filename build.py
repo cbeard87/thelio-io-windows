@@ -12,6 +12,17 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--sign', action='store_true')
 args = parser.parse_args()
 
+# Read the package version from Cargo.toml so the signing path tracks version bumps
+def cargo_version():
+    with open("Cargo.toml") as cargo_toml:
+        for line in cargo_toml:
+            stripped = line.strip()
+            if stripped.startswith("version"):
+                return stripped.split("=", 1)[1].strip().strip('"')
+    raise RuntimeError("could not find version in Cargo.toml")
+
+version = cargo_version()
+
 # Build .msi
 subprocess.check_call([
     "cargo",
@@ -52,6 +63,6 @@ if args.sign:
         "-password=" + os.environ["SSL_COM_PASSWORD"],
         "-totp_secret=" + os.environ["SSL_COM_TOTP_SECRET"],
         "-program_name=System76 Thelio Io",
-        "-input_file_path=../../../wix/thelio-io-0.1.0-x86_64.msi",
+        "-input_file_path=../../../wix/thelio-io-" + version + "-x86_64.msi",
         "-output_dir_path=../../",
     ], cwd="target/sign/CodeSignTool/CodeSignTool-v1.1.0-windows")
