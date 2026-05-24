@@ -24,7 +24,8 @@ jobs:
                   SSL_COM_CREDENTIAL_ID: ${{ github.event_name == 'release' && secrets.SSL_COM_CREDENTIAL_ID || '' }}
                   SSL_COM_TOTP_SECRET: ${{ github.event_name == 'release' && secrets.SSL_COM_TOTP_SECRET || '' }}
                   SIGN: ${{ github.event_name == 'release' && secrets.SSL_COM_USERNAME != '' && '--sign' || '' }}
-              run: python build.py $Env:SIGN
+              run: |
+                  if ($Env:SIGN) { python build.py --sign } else { python build.py }
             - uses: actions/upload-artifact@v4
               with:
                   name: thelio-io
