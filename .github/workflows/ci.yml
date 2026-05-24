@@ -15,7 +15,7 @@ jobs:
             - uses: actions/checkout@v4
               with:
                   lfs: true
-            - uses: dtolnay/rust-toolchain@1.82.0
+            - uses: dtolnay/rust-toolchain@1.88.0
             - run: choco install dotnet-8.0-sdk python3 wixtoolset
             - run: cargo install cargo-wix
             - env:
